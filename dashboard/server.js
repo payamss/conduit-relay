@@ -15,8 +15,6 @@ const SSH_KEY_PATH = process.env.SSH_KEY_PATH || join(process.env.HOME, '.ssh/id
 const DB_PATH = join(__dirname, 'stats.db');
 
 // Load servers from config file or environment
-// Format: name:host:user:bandwidthLimitTB (comma-separated)
-// Example: SERVERS=server1:1.2.3.4:root:10,server2:5.6.7.8:root:5
 function loadServers() {
   const configPath = join(__dirname, 'servers.json');
   if (existsSync(configPath)) {
@@ -34,7 +32,7 @@ function loadServers() {
 
 const SERVERS = loadServers();
 
-// SQLite database
+// Initialize SQLite database
 let db;
 async function initDb() {
   const SQL = await initSqlJs();
@@ -43,16 +41,18 @@ async function initDb() {
   } else {
     db = new SQL.Database();
   }
-  db.run(`CREATE TABLE IF NOT EXISTS stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    server TEXT NOT NULL,
-    status TEXT,
-    clients INTEGER DEFAULT 0,
-    upload_bytes INTEGER DEFAULT 0,
-    download_bytes INTEGER DEFAULT 0,
-    uptime TEXT
-  )`);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      server TEXT NOT NULL,
+      status TEXT,
+      clients INTEGER DEFAULT 0,
+      upload_bytes INTEGER DEFAULT 0,
+      download_bytes INTEGER DEFAULT 0,
+      uptime TEXT
+    )
+  `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_stats_timestamp ON stats(timestamp)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_stats_server ON stats(server)`);
   saveDb();
@@ -70,13 +70,19 @@ function parseBytes(str) {
   return Math.round(parseFloat(match[1]) * (units[(match[2] || 'B').toUpperCase()] || 1));
 }
 
-// SSH connection pool
+// Cache
+let statsCache = { data: null, timestamp: 0 };
+const CACHE_TTL = 5000;
+
+// SSH Connection Pool
 const sshPool = new Map();
+const SSH_KEEPALIVE_INTERVAL = 10000;
+const SSH_KEEPALIVE_COUNT_MAX = 3;
 
 function getPooledConnection(server) {
   return new Promise((resolve, reject) => {
     const existing = sshPool.get(server.name);
-    if (existing?.connected) return resolve(existing.conn);
+    if (existing && existing.connected) return resolve(existing.conn);
 
     const conn = new Client();
     let privateKey;
@@ -100,20 +106,25 @@ function getPooledConnection(server) {
       username: server.user,
       privateKey,
       readyTimeout: 15000,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 3,
+      keepaliveInterval: SSH_KEEPALIVE_INTERVAL,
+      keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
     });
   });
 }
 
 async function sshExec(server, command) {
-  const conn = await getPooledConnection(server);
+  let conn;
+  try {
+    conn = await getPooledConnection(server);
+  } catch (err) {
+    throw new Error(`SSH connect failed: ${err.message}`);
+  }
   return new Promise((resolve, reject) => {
     let output = '';
     conn.exec(command, (err, stream) => {
       if (err) { sshPool.delete(server.name); return reject(err); }
-      stream.on('data', d => output += d.toString());
-      stream.stderr.on('data', d => output += d.toString());
+      stream.on('data', (data) => { output += data.toString(); });
+      stream.stderr.on('data', (data) => { output += data.toString(); });
       stream.on('close', () => resolve(output));
     });
   });
@@ -147,9 +158,16 @@ function parseConduitStatus(output, serverName) {
   return result;
 }
 
-// Stats fetching
-let statsCache = { data: null, timestamp: 0 };
-const CACHE_TTL = 5000;
+function saveStats(stats) {
+  const timestamp = Date.now();
+  for (const s of stats) {
+    db.run(`INSERT INTO stats (timestamp, server, status, clients, upload_bytes, download_bytes, uptime) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [timestamp, s.name, s.status, s.clients, parseBytes(s.upload), parseBytes(s.download), s.uptime]);
+  }
+  saveDb();
+}
+
+// Batched fetching
 const BATCH_SIZE = 3;
 const BATCH_DELAY = 500;
 
@@ -180,40 +198,10 @@ async function fetchAllStats() {
   return results;
 }
 
-function saveStats(stats) {
-  const timestamp = Date.now();
-  for (const s of stats) {
-    db.run(`INSERT INTO stats (timestamp, server, status, clients, upload_bytes, download_bytes, uptime) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [timestamp, s.name, s.status, s.clients, parseBytes(s.upload), parseBytes(s.download), s.uptime]);
-  }
-  saveDb();
-}
-
-// Auto-stop servers exceeding bandwidth
-async function checkBandwidthLimits() {
-  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
-  for (const server of SERVERS) {
-    if (!server.bandwidthLimit) continue;
-    try {
-      const stmt = db.prepare(`SELECT MAX(upload_bytes) as max_up, MAX(download_bytes) as max_down FROM stats WHERE server = ? AND timestamp > ?`);
-      stmt.bind([server.name, startOfMonth]);
-      if (stmt.step()) {
-        const row = stmt.getAsObject();
-        const total = (row.max_up || 0) + (row.max_down || 0);
-        if (total >= server.bandwidthLimit) {
-          console.log(`[AUTO-STOP] ${server.name} exceeded limit`);
-          try { await sshExec(server, 'systemctl stop conduit'); } catch (e) { console.error(e); }
-        }
-      }
-      stmt.free();
-    } catch (e) { console.error(e); }
-  }
-}
-
 // Express setup
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(session({ secret: process.env.SESSION_SECRET || 'change-me', resave: false, saveUninitialized: false, cookie: { maxAge: 86400000 } }));
+app.use(session({ secret: process.env.SESSION_SECRET || 'conduit-dashboard-secret', resave: false, saveUninitialized: false, cookie: { maxAge: 86400000 } }));
 
 const requireAuth = (req, res, next) => {
   if (req.session.authenticated) return next();
@@ -239,6 +227,19 @@ app.get('/api/history', requireAuth, (req, res) => {
     const since = Date.now() - (hours * 3600000);
     const stmt = db.prepare(`SELECT timestamp, server, status, clients, upload_bytes, download_bytes, uptime FROM stats WHERE timestamp > ? ORDER BY timestamp ASC`);
     stmt.bind([since]);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/history/:server', requireAuth, (req, res) => {
+  try {
+    const hours = parseInt(req.query.hours) || 24;
+    const since = Date.now() - (hours * 3600000);
+    const stmt = db.prepare(`SELECT timestamp, status, clients, upload_bytes, download_bytes, uptime FROM stats WHERE server = ? AND timestamp > ? ORDER BY timestamp ASC`);
+    stmt.bind([req.params.server, since]);
     const rows = [];
     while (stmt.step()) rows.push(stmt.getAsObject());
     stmt.free();
@@ -278,12 +279,46 @@ app.post('/api/control/:action', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/api/control/:server/:action', requireAuth, async (req, res) => {
+  const { server: serverName, action } = req.params;
+  if (!['stop', 'start', 'restart'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+  const server = SERVERS.find(s => s.name === serverName);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  try {
+    await sshExec(server, `systemctl ${action} conduit`);
+    statsCache = { data: null, timestamp: 0 };
+    res.json({ server: serverName, action, success: true });
+  } catch (e) { res.status(500).json({ server: serverName, action, success: false, error: e.message }); }
+});
+
 app.use(requireAuth, express.static(join(__dirname, 'public')));
 app.get('/', requireAuth, (_, res) => res.sendFile(join(__dirname, 'public/index.html')));
 
+// Auto-stop servers exceeding bandwidth
+async function checkBandwidthLimits() {
+  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+  for (const server of SERVERS) {
+    if (!server.bandwidthLimit) continue;
+    try {
+      const stmt = db.prepare(`SELECT MAX(upload_bytes) as max_up, MAX(download_bytes) as max_down FROM stats WHERE server = ? AND timestamp > ?`);
+      stmt.bind([server.name, startOfMonth]);
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        const total = (row.max_up || 0) + (row.max_down || 0);
+        if (total >= server.bandwidthLimit) {
+          console.log(`[AUTO-STOP] ${server.name} exceeded limit (${(total / 1024**4).toFixed(2)} TB / ${(server.bandwidthLimit / 1024**4).toFixed(2)} TB)`);
+          try { await sshExec(server, 'systemctl stop conduit'); console.log(`[AUTO-STOP] ${server.name} stopped`); }
+          catch (e) { console.error(`[AUTO-STOP] Failed to stop ${server.name}:`, e.message); }
+        }
+      }
+      stmt.free();
+    } catch (e) { console.error(`[AUTO-STOP] Error checking ${server.name}:`, e.message); }
+  }
+}
+
 // Background polling
 setInterval(async () => {
-  try { await fetchAllStats(); await checkBandwidthLimits(); } catch (e) { console.error(e); }
+  try { await fetchAllStats(); await checkBandwidthLimits(); } catch (e) { console.error('Background poll failed:', e); }
 }, 30000);
 
 // Start
