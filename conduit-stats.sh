@@ -67,7 +67,7 @@ show_geo() {
   STATS=$(timeout 30 tcpdump -ni any 'inbound and (tcp or udp)' -c 300 2>/dev/null | \
     awk '{print $5}' | cut -d. -f1-4 | grep -E '^[0-9]+\.' | sort -u | \
     xargs -I{} sh -c 'geoiplookup {} 2>/dev/null | grep -v "not found"' | \
-    awk -F': ' '{print $2}' | sort | uniq -c | sort -rn)
+    awk -F': ' '{print $2}' | sed 's/Islamic Republic of//' | sort | uniq -c | sort -rn)
 
   if [ -z "$STATS" ]; then
     echo "  No connections captured"
@@ -83,7 +83,8 @@ show_geo() {
     CODE=$(echo "$country" | cut -d',' -f1)
     NAME=$(echo "$country" | cut -d',' -f2- | sed 's/^ *//' | cut -c1-18)
     BAR_W=$((count * 25 / MAX))
-    BAR=$(printf '%*s' "$BAR_W" | tr ' ' '#')
+    BAR=""
+    for i in $(seq 1 $BAR_W); do BAR="${BAR}="; done
     if [ "$CODE" = "IR" ]; then
       printf "  ${GREEN}%3d  %-2s %-18s %s${NC}\n" "$count" "$CODE" "$NAME" "$BAR"
     else

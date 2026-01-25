@@ -33,7 +33,7 @@ STATS=$(timeout "$DURATION" tcpdump -ni any 'inbound and (tcp or udp)' -c "$SAMP
   grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
   sort -u | \
   xargs -I{} sh -c 'geoiplookup {} 2>/dev/null | grep -v "not found"' | \
-  awk -F': ' '{print $2}' | \
+  awk -F': ' '{print $2}' | sed 's/Islamic Republic of//' | \
   sort | uniq -c | sort -rn)
 
 if [ -z "$STATS" ]; then
@@ -58,7 +58,8 @@ echo "$STATS" | head -15 | while read count country; do
 
   # Calculate bar width (max 30 chars)
   BAR_WIDTH=$((count * 30 / MAX_COUNT))
-  BAR=$(printf '%*s' "$BAR_WIDTH" | tr ' ' '#')
+  BAR=""
+  for i in $(seq 1 $BAR_WIDTH); do BAR="${BAR}="; done
 
   # Color Iran green
   if [ "$CODE" = "IR" ]; then
