@@ -54,12 +54,12 @@ MAX_COUNT=$(echo "$STATS" | head -1 | awk '{print $1}')
 echo "$STATS" | head -15 | while read count country; do
   # Extract country code and name
   CODE=$(echo "$country" | cut -d',' -f1)
-  NAME=$(echo "$country" | cut -d',' -f2- | sed 's/^ *//' | cut -c1-20)
+  NAME=$(echo "$country" | cut -d',' -f2- | sed 's/^ *//;s/, *$//' | cut -c1-20)
+  [ "$CODE" = "IR" ] && NAME="Iran"
 
   # Calculate bar width (max 30 chars)
   BAR_WIDTH=$((count * 30 / MAX_COUNT))
-  BAR=""
-  for i in $(seq 1 $BAR_WIDTH); do BAR="${BAR}="; done
+  BAR=$(head -c $BAR_WIDTH < /dev/zero | tr '\0' '=')
 
   # Color Iran green
   if [ "$CODE" = "IR" ]; then

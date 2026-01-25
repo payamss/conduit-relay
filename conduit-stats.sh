@@ -81,10 +81,10 @@ show_geo() {
   MAX=$(echo "$STATS" | head -1 | awk '{print $1}')
   echo "$STATS" | head -10 | while read count country; do
     CODE=$(echo "$country" | cut -d',' -f1)
-    NAME=$(echo "$country" | cut -d',' -f2- | sed 's/^ *//' | cut -c1-18)
+    NAME=$(echo "$country" | cut -d',' -f2- | sed 's/^ *//;s/, *$//' | cut -c1-18)
+    [ "$CODE" = "IR" ] && NAME="Iran"
     BAR_W=$((count * 25 / MAX))
-    BAR=""
-    for i in $(seq 1 $BAR_W); do BAR="${BAR}="; done
+    BAR=$(head -c $BAR_W < /dev/zero | tr '\0' '=')
     if [ "$CODE" = "IR" ]; then
       printf "  ${GREEN}%3d  %-2s %-18s %s${NC}\n" "$count" "$CODE" "$NAME" "$BAR"
     else
