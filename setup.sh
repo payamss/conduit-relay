@@ -223,6 +223,7 @@ ExecStart=/usr/bin/node $DASHBOARD_DIR/server.js
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+Environment=HOME=/root
 
 [Install]
 WantedBy=multi-user.target

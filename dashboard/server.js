@@ -282,7 +282,7 @@ async function fetchGeoStats(server) {
   try {
     // Capture unique IPs, look up countries, count occurrences
     // tcpdump output: "timestamp eth0 In IP src_ip.port > dst_ip.port: ..." - IP is field 5
-    const cmd = `sudo -n timeout 30 tcpdump -ni any 'inbound and (tcp or udp)' -c 500 2>/dev/null | awk '{print $5}' | cut -d. -f1-4 | grep -E '^[0-9]+\\.' | sort -u | xargs -n1 geoiplookup 2>/dev/null | grep -v 'not found' | awk -F': ' '{print $2}' | sort | uniq -c | sort -rn`;
+    const cmd = `sudo -n /usr/bin/timeout 30 /usr/sbin/tcpdump -ni any 'inbound and (tcp or udp)' -c 500 2>/dev/null | awk '{print $5}' | cut -d. -f1-4 | grep -E '^[0-9]+\\.' | sort -u | xargs -n1 geoiplookup 2>/dev/null | grep -v 'not found' | awk -F': ' '{print $2}' | sort | uniq -c | sort -rn`;
     const output = await sshExec(server, cmd);
     const results = [];
     // Parse output: "  176 IR, Iran, Islamic Republic of"
