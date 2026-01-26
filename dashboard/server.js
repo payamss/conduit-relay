@@ -186,7 +186,7 @@ async function sshExec(server, command) {
 }
 
 function parseConduitStatus(output, serverName) {
-  const result = { name: serverName, status: 'offline', clients: 0, upload: '0 B', download: '0 B', uptime: 'N/A', error: null, maxClients: null, bandwidth: null };
+  const result = { name: serverName, status: 'offline', clients: 0, connecting: 0, upload: '0 B', download: '0 B', uptime: 'N/A', error: null, maxClients: null, bandwidth: null };
   if (!output) return result;
 
   if (output.includes('Active: active') || output.includes('running')) result.status = 'running';
@@ -197,6 +197,7 @@ function parseConduitStatus(output, serverName) {
 
   if (newFormat.length > 0) {
     const m = newFormat[newFormat.length - 1];
+    result.connecting = parseInt(m[1], 10);
     result.clients = parseInt(m[2], 10);
     result.upload = m[3].trim();
     result.download = m[4].trim();
@@ -471,19 +472,61 @@ async function fetchAllClientStats() {
 const BATCH_SIZE = 3;
 const BATCH_DELAY = 500;
 
+// Cache for last known good stats per server (prevents showing 0/N/A when STATS not in log window)
+const lastKnownStats = new Map();
+
 async function fetchServerStats(server) {
   try {
     const output = await sshExec(
       server,
       'sudo -n systemctl status conduit 2>/dev/null; ' +
-      'sudo -n journalctl -u conduit -n 20 --no-pager 2>/dev/null; ' +
+      'sudo -n journalctl -u conduit -n 50 --no-pager 2>/dev/null; ' +
       'sudo -n grep ExecStart /etc/systemd/system/conduit.service 2>/dev/null'
     );
     const stats = parseConduitStatus(output, server.name);
     stats.host = server.host;
+    
+    // Get or create cache for this server
+    const cached = lastKnownStats.get(server.name) || {};
+    
+    // Cache each field independently - only update if we got a good value
+    // For clients/connecting: cache if > 0, OR if uptime is valid (means STATS line was parsed)
+    const hasValidStats = stats.uptime !== 'N/A';
+    
+    if (hasValidStats) {
+      // STATS line was found - cache all values from it
+      cached.clients = stats.clients;
+      cached.connecting = stats.connecting;
+      cached.uptime = stats.uptime;
+      cached.upload = stats.upload;
+      cached.download = stats.download;
+    } else if (stats.status === 'running' || stats.status === 'connected') {
+      // Service running but STATS line not found - use cached values
+      if (cached.clients !== undefined) stats.clients = cached.clients;
+      if (cached.connecting !== undefined) stats.connecting = cached.connecting;
+      if (cached.uptime !== undefined) stats.uptime = cached.uptime;
+      if (cached.upload !== undefined) stats.upload = cached.upload;
+      if (cached.download !== undefined) stats.download = cached.download;
+    }
+    
+    lastKnownStats.set(server.name, cached);
     return stats;
   } catch (err) {
-    return { name: server.name, host: server.host, status: 'error', clients: 0, upload: '0 B', download: '0 B', uptime: 'N/A', maxClients: null, bandwidth: null, error: err.message };
+    // On error, try to return cached data with error status
+    const cached = lastKnownStats.get(server.name) || {};
+    return { 
+      name: server.name, 
+      host: server.host, 
+      status: 'error', 
+      clients: cached.clients || 0, 
+      connecting: cached.connecting || 0, 
+      upload: cached.upload || '0 B', 
+      download: cached.download || '0 B', 
+      uptime: cached.uptime || 'N/A', 
+      maxClients: null, 
+      bandwidth: null, 
+      error: err.message 
+    };
   }
 }
 

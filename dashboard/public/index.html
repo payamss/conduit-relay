@@ -54,7 +54,7 @@
     /* Summary bar */
     .summary {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 1px;
       background: #1a1a1a;
       border-radius: 8px;
@@ -345,7 +345,10 @@
     .btn-success:hover { background: rgba(34,197,94,0.25); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    @media (max-width: 640px) {
+    @media (max-width: 768px) {
+      .summary { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 480px) {
       .summary { grid-template-columns: repeat(2, 1fr); }
       .summary-value { font-size: 1.5rem; }
     }
@@ -538,8 +541,12 @@
         <div class="summary-label">Nodes Online</div>
       </div>
       <div class="summary-item">
+        <div class="summary-value" id="totalConnecting">-</div>
+        <div class="summary-label">Connecting</div>
+      </div>
+      <div class="summary-item">
         <div class="summary-value" id="totalClients">-</div>
-        <div class="summary-label">Clients</div>
+        <div class="summary-label">Connected</div>
       </div>
       <div class="summary-item">
         <div class="summary-value" id="totalUpload">-</div>
@@ -636,6 +643,30 @@
       return (b / Math.pow(1024, i)).toFixed(1) + ' ' + ['B','KB','MB','GB','TB'][i];
     };
 
+    // Clipboard helper that works on HTTP (fallback for non-secure contexts)
+    const copyToClipboard = (text) => {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+      }
+      // Fallback for HTTP
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      return new Promise((resolve, reject) => {
+        try {
+          document.execCommand('copy');
+          resolve();
+        } catch (e) {
+          reject(e);
+        } finally {
+          document.body.removeChild(textarea);
+        }
+      });
+    };
+
     const renderNode = s => `
       <div class="node" data-server="${s.name}">
         <div class="node-header">
@@ -646,7 +677,8 @@
           <span class="status status-${s.status}" data-field="status">${s.status}</span>
         </div>
         <div class="node-stats">
-          <div><div class="node-stat-value" data-field="clients">${s.clients}</div><div class="node-stat-label">Clients</div></div>
+          <div><div class="node-stat-value" data-field="connecting">${s.connecting || 0}</div><div class="node-stat-label">Connecting</div></div>
+          <div><div class="node-stat-value" data-field="clients">${s.clients}</div><div class="node-stat-label">Connected</div></div>
           <div><div class="node-stat-value" data-field="uptime">${s.uptime}</div><div class="node-stat-label">Uptime</div></div>
           <div><div class="node-stat-value" data-field="upload">${s.upload}</div><div class="node-stat-label">Upload</div></div>
           <div><div class="node-stat-value" data-field="download">${s.download}</div><div class="node-stat-label">Download</div></div>
@@ -689,7 +721,7 @@
               statusEl.className = `status status-${s.status}`;
             }
 
-            const fields = { clients: s.clients, uptime: s.uptime, upload: s.upload, download: s.download };
+            const fields = { connecting: s.connecting || 0, clients: s.clients, uptime: s.uptime, upload: s.upload, download: s.download };
             for (const [field, val] of Object.entries(fields)) {
               const el = node.querySelector(`[data-field="${field}"]`);
               if (el && el.textContent !== String(val)) el.textContent = val;
@@ -715,6 +747,7 @@
 
         const active = data.filter(s => ['connected','active','running','waiting'].includes(s.status)).length;
         document.getElementById('totalNodes').textContent = `${active}/${data.length}`;
+        document.getElementById('totalConnecting').textContent = data.reduce((a, s) => a + (s.connecting || 0), 0);
         document.getElementById('totalClients').textContent = data.reduce((a, s) => a + s.clients, 0);
         document.getElementById('totalUpload').textContent = formatBytes(data.reduce((a, s) => a + parseBytes(s.upload), 0));
         document.getElementById('totalDownload').textContent = formatBytes(data.reduce((a, s) => a + parseBytes(s.download), 0));
@@ -1461,7 +1494,7 @@
       },
 
       copy() {
-        navigator.clipboard.writeText(this.joinCommand).then(() => {
+        copyToClipboard(this.joinCommand).then(() => {
           const btn = document.querySelector('.wizard-code-box button');
           if (btn) {
             const orig = btn.textContent;
@@ -1550,7 +1583,7 @@
 
       copyText(type, btn) {
         const text = type === 'join' ? this._joinCommand : this._sshKey;
-        navigator.clipboard.writeText(text).then(() => {
+        copyToClipboard(text).then(() => {
           btn.textContent = 'Copied!';
           setTimeout(() => btn.textContent = 'Copy', 1500);
         });
