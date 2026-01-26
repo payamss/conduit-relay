@@ -912,6 +912,91 @@ app.put('/api/servers/:name', requireAuth, (req, res) => {
   res.json({ success: true, server: SERVERS[idx] });
 });
 
+// PUT /api/servers/:name/config - Update conduit service config (-m, -b flags)
+app.put('/api/servers/:name/config', requireAuth, async (req, res) => {
+  const server = SERVERS.find(s => s.name === req.params.name);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+
+  const { maxClients, bandwidth } = req.body;
+  
+  // Validate inputs
+  if (maxClients !== undefined && maxClients !== null && maxClients !== '') {
+    const m = parseInt(maxClients, 10);
+    if (isNaN(m) || m < 1 || m > 10000) {
+      return res.status(400).json({ error: 'Max clients must be between 1 and 10000' });
+    }
+  }
+  if (bandwidth !== undefined && bandwidth !== null && bandwidth !== '') {
+    const b = parseInt(bandwidth, 10);
+    if (isNaN(b) || (b < -1) || (b > 1000000)) {
+      return res.status(400).json({ error: 'Bandwidth must be -1 (unlimited) or 0-1000000 Mbps' });
+    }
+  }
+
+  try {
+    // Read current service file
+    const readCmd = 'cat /etc/systemd/system/conduit.service 2>/dev/null';
+    const serviceFile = await sshExec(server, readCmd);
+    
+    if (!serviceFile || !serviceFile.includes('ExecStart')) {
+      return res.status(500).json({ error: 'Could not read service file' });
+    }
+
+    // Parse and update ExecStart line
+    let newServiceFile = serviceFile;
+    const execMatch = serviceFile.match(/^(ExecStart=.*)$/m);
+    if (!execMatch) {
+      return res.status(500).json({ error: 'Could not find ExecStart in service file' });
+    }
+
+    let execLine = execMatch[1];
+    
+    // Update -m flag
+    if (maxClients !== undefined && maxClients !== null && maxClients !== '') {
+      if (execLine.match(/-m\s+\d+/)) {
+        execLine = execLine.replace(/-m\s+\d+/, `-m ${maxClients}`);
+      } else {
+        // Add -m flag after 'conduit start'
+        execLine = execLine.replace(/conduit start/, `conduit start -m ${maxClients}`);
+      }
+    }
+
+    // Update -b flag
+    if (bandwidth !== undefined && bandwidth !== null && bandwidth !== '') {
+      if (execLine.match(/-b\s+-?\d+/)) {
+        execLine = execLine.replace(/-b\s+-?\d+/, `-b ${bandwidth}`);
+      } else {
+        // Add -b flag after -m or after 'conduit start'
+        if (execLine.includes('-m')) {
+          execLine = execLine.replace(/-m\s+\d+/, (match) => `${match} -b ${bandwidth}`);
+        } else {
+          execLine = execLine.replace(/conduit start/, `conduit start -b ${bandwidth}`);
+        }
+      }
+    }
+
+    newServiceFile = serviceFile.replace(execMatch[1], execLine);
+
+    // Write updated service file and restart
+    const updateCmd = `
+      echo '${newServiceFile.replace(/'/g, "'\\''")}' | sudo tee /etc/systemd/system/conduit.service > /dev/null && \
+      sudo systemctl daemon-reload && \
+      sudo systemctl restart conduit
+    `;
+    
+    await sshExec(server, updateCmd);
+    
+    // Clear cache to refresh stats
+    statsCache = { data: null, timestamp: 0 };
+    
+    console.log(`[CONFIG] Updated ${server.name}: maxClients=${maxClients}, bandwidth=${bandwidth}`);
+    res.json({ success: true, message: 'Configuration updated and service restarted' });
+  } catch (err) {
+    console.error(`[CONFIG] Failed to update ${server.name}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // UPDATE SYSTEM - Check for updates and update all servers
 // ═══════════════════════════════════════════════════════════════════

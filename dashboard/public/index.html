@@ -1113,29 +1113,53 @@
 
     // Edit node modal
     async function editNode(serverName) {
-      // Fetch current server data
+      // Fetch current server data from both endpoints
       let servers = [];
+      let stats = [];
       try {
-        const res = await fetch('/api/servers');
-        servers = await res.json();
+        const [serversRes, statsRes] = await Promise.all([
+          fetch('/api/servers'),
+          fetch('/api/stats')
+        ]);
+        servers = await serversRes.json();
+        stats = await statsRes.json();
       } catch {}
       const server = servers.find(s => s.name === serverName);
+      const serverStats = stats.find(s => s.name === serverName);
       if (!server) return alert('Server not found');
 
       const currentLimit = server.bandwidthLimit ? (server.bandwidthLimit / (1024**4)).toFixed(1) : '';
+      const currentMaxClients = serverStats?.maxClients || '';
+      const currentBandwidth = serverStats?.bandwidth ?? '';
 
       const html = `
         <div id="edit-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:1000">
-          <div style="background:#111;border:1px solid #262626;border-radius:12px;width:90%;max-width:400px;overflow:hidden">
+          <div style="background:#111;border:1px solid #262626;border-radius:12px;width:90%;max-width:450px;overflow:hidden;max-height:90vh;overflow-y:auto">
             <div style="padding:1.25rem;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:center">
               <h2 style="margin:0;font-size:1rem">Edit ${serverName}</h2>
               <button onclick="document.getElementById('edit-modal').remove()" style="background:none;border:none;color:#525252;cursor:pointer;font-size:1.25rem">✕</button>
             </div>
             <div style="padding:1.25rem">
+              <div style="background:#0a0a0a;border:1px solid #262626;border-radius:8px;padding:1rem;margin-bottom:1rem">
+                <div style="font-size:0.6875rem;color:#525252;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.75rem">Conduit Service Config</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+                  <label>
+                    <span style="display:block;font-size:0.75rem;color:#737373;margin-bottom:0.375rem">Max Clients (-m)</span>
+                    <input type="number" id="edit-max-clients" value="${currentMaxClients}" placeholder="200" min="1" max="10000" style="width:100%;background:#111;border:1px solid #262626;border-radius:6px;padding:0.5rem;color:#e5e5e5;font-family:'JetBrains Mono',monospace;font-size:0.875rem">
+                  </label>
+                  <label>
+                    <span style="display:block;font-size:0.75rem;color:#737373;margin-bottom:0.375rem">Bandwidth (-b) Mbps</span>
+                    <input type="number" id="edit-conduit-bandwidth" value="${currentBandwidth}" placeholder="-1 = unlimited" min="-1" max="1000000" style="width:100%;background:#111;border:1px solid #262626;border-radius:6px;padding:0.5rem;color:#e5e5e5;font-family:'JetBrains Mono',monospace;font-size:0.875rem">
+                  </label>
+                </div>
+                <span style="font-size:0.6875rem;color:#525252;margin-top:0.5rem;display:block">Changes will restart the conduit service</span>
+                <button onclick="saveConduitConfig('${serverName}')" style="margin-top:0.75rem;background:#3b82f6;border:none;color:#fff;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-size:0.75rem;width:100%">Apply & Restart Conduit</button>
+              </div>
+              
               <label style="display:block;margin-bottom:1rem">
                 <span style="display:block;font-size:0.75rem;color:#737373;margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.05em">Monthly Bandwidth Limit (TB)</span>
                 <input type="number" id="edit-bandwidth" value="${currentLimit}" placeholder="Leave empty for unlimited" step="0.1" min="0" style="width:100%;background:#0a0a0a;border:1px solid #262626;border-radius:6px;padding:0.625rem;color:#e5e5e5;font-family:'JetBrains Mono',monospace;font-size:0.875rem">
-                <span style="font-size:0.6875rem;color:#525252;margin-top:0.25rem;display:block">Empty = unlimited</span>
+                <span style="font-size:0.6875rem;color:#525252;margin-top:0.25rem;display:block">Auto-stop when reached (dashboard setting)</span>
               </label>
               <label style="display:block;margin-bottom:1rem">
                 <span style="display:block;font-size:0.75rem;color:#737373;margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.05em">Display Name</span>
@@ -1144,12 +1168,52 @@
             </div>
             <div style="padding:1rem 1.25rem;border-top:1px solid #1a1a1a;display:flex;justify-content:space-between">
               <button onclick="deleteNode('${serverName}')" style="background:rgba(239,68,68,0.15);border:none;color:#ef4444;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-size:0.8125rem">Delete</button>
-              <button onclick="saveNode('${serverName}')" style="background:#22c55e;border:none;color:#000;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-weight:500;font-size:0.8125rem">Save</button>
+              <button onclick="saveNode('${serverName}')" style="background:#22c55e;border:none;color:#000;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-weight:500;font-size:0.8125rem">Save Dashboard Settings</button>
             </div>
           </div>
         </div>
       `;
       document.body.insertAdjacentHTML('beforeend', html);
+    }
+
+    async function saveConduitConfig(serverName) {
+      const maxClients = document.getElementById('edit-max-clients').value;
+      const bandwidth = document.getElementById('edit-conduit-bandwidth').value;
+      
+      const btn = event.target;
+      const originalText = btn.textContent;
+      btn.textContent = 'Applying...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch(`/api/servers/${serverName}/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            maxClients: maxClients || null, 
+            bandwidth: bandwidth || null 
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.textContent = '✓ Applied';
+          btn.style.background = '#22c55e';
+          setTimeout(() => {
+            btn.textContent = originalText;
+            btn.style.background = '#3b82f6';
+            btn.disabled = false;
+            fetchStats();
+          }, 2000);
+        } else {
+          alert('Failed: ' + (data.error || 'Unknown error'));
+          btn.textContent = originalText;
+          btn.disabled = false;
+        }
+      } catch (e) {
+        alert('Save failed: ' + e.message);
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }
     }
 
     async function saveNode(serverName) {
