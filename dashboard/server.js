@@ -683,6 +683,13 @@ const FALLBACK_BINARY_URL = 'https://raw.githubusercontent.com/paradixe/conduit-
 let cachedLatestVersion = null;
 let versionCacheTime = 0;
 
+// Extract version number from tag (e.g., "release-cli-1.0.0" -> "1.0.0")
+function extractVersion(tag) {
+  if (!tag) return null;
+  const match = tag.match(/(\d+\.\d+\.\d+)/);
+  return match ? match[1] : tag;
+}
+
 // GET /api/version - Check current vs latest version
 app.get('/api/version', requireAuth, async (req, res) => {
   try {
@@ -692,7 +699,7 @@ app.get('/api/version', requireAuth, async (req, res) => {
         const ghRes = await fetch('https://api.github.com/repos/Psiphon-Inc/conduit/releases/latest');
         if (ghRes.ok) {
           const data = await ghRes.json();
-          cachedLatestVersion = data.tag_name;
+          cachedLatestVersion = extractVersion(data.tag_name);
           versionCacheTime = Date.now();
         }
       } catch {}
