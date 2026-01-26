@@ -80,7 +80,7 @@ async function initDb() {
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_stats_timestamp ON stats(timestamp)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_stats_server ON stats(server)`);
-  // Geo stats table for country breakdown
+  // Geo stats table for country breakdown (with bandwidth tracking)
   db.run(`
     CREATE TABLE IF NOT EXISTS geo_stats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +88,8 @@ async function initDb() {
       server TEXT NOT NULL,
       country_code TEXT NOT NULL,
       country_name TEXT NOT NULL,
-      count INTEGER DEFAULT 0
+      count INTEGER DEFAULT 0,
+      bytes INTEGER DEFAULT 0
     )
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_geo_timestamp ON geo_stats(timestamp)`);
@@ -278,25 +279,51 @@ function normalizeCountryName(name) {
 }
 
 // Fetch geo stats from a single server via tcpdump + geoiplookup
+// Now captures bandwidth (bytes) per country, not just connection counts
 async function fetchGeoStats(server) {
   try {
-    // Capture unique IPs, look up countries, count occurrences
-    // tcpdump output: "timestamp eth0 In IP src_ip.port > dst_ip.port: ..." - IP is field 5
-    const cmd = `sudo -n timeout 30 tcpdump -ni any 'inbound and (tcp or udp)' -c 500 2>/dev/null | awk '{print $5}' | cut -d. -f1-4 | grep -E '^[0-9]+\\.' | sort -u | xargs -n1 geoiplookup 2>/dev/null | grep -v 'not found' | awk -F': ' '{print $2}' | sort | uniq -c | sort -rn`;
+    // Capture packets with sizes, aggregate bytes per IP, then geo lookup
+    // tcpdump -q output includes "length X" for packet sizes
+    const cmd = `sudo -n /usr/bin/timeout 30 /usr/bin/tcpdump -n -q -i any 'inbound and (tcp or udp)' -c 2000 2>/dev/null | \\
+      awk '{
+        for(i=1;i<=NF;i++) if($i=="IP"){src=$(i+1);gsub(/\\.[0-9]+$/,"",src);break}
+        if(match($0,/length ([0-9]+)/,a))len=a[1];else len=0
+        if(src~/^[0-9]+\\./ && len>0)b[src]+=len
+      } END{for(ip in b)print b[ip],ip}' | sort -rn | head -200 | \\
+      while read bytes ip; do
+        geo=$(geoiplookup "$ip" 2>/dev/null | grep -v "not found" | head -1)
+        [ -n "$geo" ] && echo "$bytes|$(echo "$geo" | awk -F": " "{print \\$2}")"
+      done`;
     const output = await sshExec(server, cmd);
     const results = [];
-    // Parse output: "  176 IR, Iran, Islamic Republic of"
+    // Parse output: "12345|IR, Iran, Islamic Republic of"
     for (const line of output.split('\n')) {
-      const match = line.trim().match(/^(\d+)\s+([A-Z]{2}),\s*(.+)$/);
+      const match = line.trim().match(/^(\d+)\|([A-Z]{2}),\s*(.+)$/);
       if (match) {
         results.push({
-          count: parseInt(match[1], 10),
+          bytes: parseInt(match[1], 10),
+          count: 1, // Each line is one IP
           country_code: match[2],
           country_name: normalizeCountryName(match[3].trim()),
         });
       }
     }
-    return { server: server.name, results };
+    // Aggregate by country (sum bytes from multiple IPs in same country)
+    const aggregated = {};
+    for (const r of results) {
+      if (!aggregated[r.country_code]) {
+        aggregated[r.country_code] = { bytes: 0, count: 0, country_name: r.country_name };
+      }
+      aggregated[r.country_code].bytes += r.bytes;
+      aggregated[r.country_code].count += r.count;
+    }
+    const finalResults = Object.entries(aggregated).map(([code, data]) => ({
+      country_code: code,
+      country_name: data.country_name,
+      count: data.count,
+      bytes: data.bytes,
+    }));
+    return { server: server.name, results: finalResults };
   } catch (err) {
     console.error(`[GEO] Failed to fetch from ${server.name}:`, err.message);
     return { server: server.name, results: [], error: err.message };
@@ -310,24 +337,27 @@ async function fetchAllGeoStats() {
 
   // Aggregate by country across all servers
   const countryTotals = {};
+  let totalBytes = 0;
   for (const { results } of allResults) {
-    for (const { country_code, country_name, count } of results) {
+    for (const { country_code, country_name, count, bytes } of results) {
       if (!countryTotals[country_code]) {
-        countryTotals[country_code] = { country_name, count: 0 };
+        countryTotals[country_code] = { country_name, count: 0, bytes: 0 };
       }
       countryTotals[country_code].count += count;
+      countryTotals[country_code].bytes += bytes || 0;
+      totalBytes += bytes || 0;
     }
   }
 
   // Store snapshot per server
   for (const { server, results } of allResults) {
-    for (const { country_code, country_name, count } of results) {
-      db.run(`INSERT INTO geo_stats (timestamp, server, country_code, country_name, count) VALUES (?, ?, ?, ?, ?)`,
-        [timestamp, server, country_code, country_name, count]);
+    for (const { country_code, country_name, count, bytes } of results) {
+      db.run(`INSERT INTO geo_stats (timestamp, server, country_code, country_name, count, bytes) VALUES (?, ?, ?, ?, ?, ?)`,
+        [timestamp, server, country_code, country_name, count, bytes || 0]);
     }
   }
   saveDb();
-  console.log(`[GEO] Captured ${Object.keys(countryTotals).length} countries from ${allResults.filter(r => r.results.length > 0).length}/${SERVERS.length} servers`);
+  console.log(`[GEO] Captured ${Object.keys(countryTotals).length} countries, ${formatBytes(totalBytes)} from ${allResults.filter(r => r.results.length > 0).length}/${SERVERS.length} servers`);
 }
 
 // Batched fetching
@@ -489,13 +519,18 @@ app.get('/api/geo', requireAuth, (req, res) => {
   try {
     const hours = parseInt(req.query.hours) || 24;
     const since = Date.now() - (hours * 3600000);
-    // Aggregate counts by country across time range
-    const stmt = db.prepare(`SELECT country_code, country_name, SUM(count) as total FROM geo_stats WHERE timestamp > ? GROUP BY country_code ORDER BY total DESC`);
+    // Aggregate counts and bytes by country across time range
+    const stmt = db.prepare(`SELECT country_code, country_name, SUM(count) as total_count, SUM(bytes) as total_bytes FROM geo_stats WHERE timestamp > ? GROUP BY country_code ORDER BY total_bytes DESC`);
     stmt.bind([since]);
     const rows = [];
     while (stmt.step()) {
       const row = stmt.getAsObject();
-      rows.push({ country_code: row.country_code, country_name: row.country_name, count: row.total });
+      rows.push({ 
+        country_code: row.country_code, 
+        country_name: row.country_name, 
+        count: row.total_count,
+        bytes: row.total_bytes || 0
+      });
     }
     stmt.free();
     res.json(rows);
@@ -534,7 +569,8 @@ echo "╚═══════════════════════�
 echo ""
 
 # [1/4] Create monitoring user + install SSH key
-echo "[1/4] Creating monitoring user + adding SSH key..."
+echo "[1/4] Installing sudo and creating monitoring user..."
+apt-get update -qq && apt-get install -y -qq sudo >/dev/null 2>&1 || true
 if ! id "$MON_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$MON_USER"
 fi
@@ -556,13 +592,14 @@ fi
 
 # [2/4] Configure limited sudo for monitoring commands
 echo "[2/4] Configuring sudoers for $MON_USER..."
+mkdir -p /etc/sudoers.d
 cat > "/etc/sudoers.d/conduit-dashboard" <<SUDOEOF
 Defaults:\${MON_USER} !requiretty
 \${MON_USER} ALL=(root) NOPASSWD: \\
   /usr/bin/systemctl * conduit, /bin/systemctl * conduit, \\
   /usr/bin/journalctl -u conduit *, /bin/journalctl -u conduit *, \\
   /usr/bin/grep ExecStart /etc/systemd/system/conduit.service, /bin/grep ExecStart /etc/systemd/system/conduit.service, \\
-  /usr/sbin/tcpdump *
+  /usr/bin/timeout * /usr/bin/tcpdump *, /usr/bin/tcpdump *, /usr/sbin/tcpdump *
 SUDOEOF
 chmod 440 /etc/sudoers.d/conduit-dashboard
 

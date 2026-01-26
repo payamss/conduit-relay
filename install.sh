@@ -9,9 +9,9 @@ SERVICE_FILE="/etc/systemd/system/conduit.service"
 PRIMARY_URL="https://github.com/ssmirr/conduit/releases/latest/download/conduit-linux-amd64"
 FALLBACK_URL="https://raw.githubusercontent.com/paradixe/conduit-relay/main/bin/conduit-linux-amd64"
 
-# Install dependencies
+# Install dependencies (including sudo for minimal systems)
 echo "Installing dependencies..."
-apt-get update -qq && apt-get install -y -qq geoip-bin >/dev/null 2>&1 || true
+apt-get update -qq && apt-get install -y -qq sudo geoip-bin >/dev/null 2>&1 || true
 
 # Download binary
 echo "Downloading conduit..."

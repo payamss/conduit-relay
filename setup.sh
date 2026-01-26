@@ -62,8 +62,8 @@ if [ "$DASHBOARD_ONLY" = "1" ]; then
 else
   echo -e "${YELLOW}[1/6] Installing Conduit Relay...${NC}"
 
-  # Install dependencies
-  apt-get update -qq && apt-get install -y -qq geoip-bin curl git >/dev/null 2>&1 || true
+  # Install dependencies (including sudo for minimal systems)
+  apt-get update -qq && apt-get install -y -qq sudo geoip-bin curl git >/dev/null 2>&1 || true
 
   # Download binary
   if curl -sL "$PRIMARY_URL" -o "$INSTALL_DIR/conduit" && [ -s "$INSTALL_DIR/conduit" ]; then
@@ -221,13 +221,14 @@ if [ "$DASHBOARD_ONLY" != "1" ]; then
     chown "$MON_USER:$MON_USER" "/home/$MON_USER/.ssh/authorized_keys"
   fi
   # Sudoers for conduitmon (limited commands, cross-distro paths)
+  mkdir -p /etc/sudoers.d
   cat > /etc/sudoers.d/conduit-dashboard << 'SUDOEOF'
 Defaults:conduitmon !requiretty
 conduitmon ALL=(root) NOPASSWD: \
   /usr/bin/systemctl * conduit, /bin/systemctl * conduit, \
   /usr/bin/journalctl -u conduit *, /bin/journalctl -u conduit *, \
   /usr/bin/grep ExecStart /etc/systemd/system/conduit.service, /bin/grep ExecStart /etc/systemd/system/conduit.service, \
-  /usr/sbin/tcpdump *
+  /usr/bin/timeout * /usr/bin/tcpdump *, /usr/bin/tcpdump *, /usr/sbin/tcpdump *
 SUDOEOF
   chmod 440 /etc/sudoers.d/conduit-dashboard
 
