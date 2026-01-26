@@ -162,14 +162,15 @@ cmd_status() {
   printf "%-12s  %-10s  %-8s  %-12s  %-12s\n" "----" "------" "-------" "------" "--------"
 
   for name in $servers; do
-    local output=$(run_on "$name" 'journalctl -u conduit -n 50 --no-pager 2>/dev/null | grep -E "STATS|Connected" | tail -5' 2>/dev/null || echo "")
+    local output=$(run_on "$name" 'journalctl -u conduit -n 50 --no-pager 2>/dev/null | grep -E "STATS" | tail -5' 2>/dev/null || echo "")
+    local svc_status=$(run_on "$name" 'systemctl is-active conduit 2>/dev/null' 2>/dev/null || echo "inactive")
 
     local status="offline"
     local clients="-"
     local upload="-"
     local download="-"
 
-    if echo "$output" | grep -q "Connected to Psiphon"; then
+    if [ "$svc_status" = "active" ]; then
       status="connected"
     fi
 
