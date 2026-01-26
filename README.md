@@ -7,6 +7,8 @@ Volunteer relay for [Psiphon](https://psiphon.ca). Routes traffic for users in c
 
 **New?** Check the [step-by-step setup guide](SETUP.md) (English + فارسی)
 
+**OrangePi/Raspberry Pi?** See the [Portainer setup guide](docs/portainer-setup.md)
+
 ---
 
 ## Quick Start (Relay + Dashboard)
