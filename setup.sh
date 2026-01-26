@@ -18,7 +18,7 @@ BANDWIDTH=${BANDWIDTH:--1}
 DASHBOARD_ONLY=${DASHBOARD_ONLY:-0}
 
 # Binary sources (official Psiphon releases)
-PRIMARY_URL="https://github.com/Psiphon-Inc/conduit/releases/latest/download/conduit-linux-amd64"
+PRIMARY_URL="https://github.com/ssmirr/conduit/releases/latest/download/conduit-linux-amd64"
 FALLBACK_URL="https://raw.githubusercontent.com/paradixe/conduit-relay/main/bin/conduit-linux-amd64"
 
 # Colors

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="Psiphon-Inc/conduit"
+REPO="ssmirr/conduit"
 
 CURRENT=$(/usr/local/bin/conduit --version 2>/dev/null | awk '{print $3}' || echo "none")
 LATEST=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep -oP '"tag_name": "\K[^"]+')

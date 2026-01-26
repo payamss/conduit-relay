@@ -677,7 +677,7 @@ app.put('/api/servers/:name', requireAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 
 // Official Psiphon releases
-const PRIMARY_BINARY_URL = 'https://github.com/Psiphon-Inc/conduit/releases/latest/download/conduit-linux-amd64';
+const PRIMARY_BINARY_URL = 'https://github.com/ssmirr/conduit/releases/latest/download/conduit-linux-amd64';
 const FALLBACK_BINARY_URL = 'https://raw.githubusercontent.com/paradixe/conduit-relay/main/bin/conduit-linux-amd64';
 
 let cachedLatestVersion = null;
@@ -696,7 +696,7 @@ app.get('/api/version', requireAuth, async (req, res) => {
     // Get latest version from Psiphon releases (cache for 5 minutes)
     if (!cachedLatestVersion || Date.now() - versionCacheTime > 300000) {
       try {
-        const ghRes = await fetch('https://api.github.com/repos/Psiphon-Inc/conduit/releases/latest');
+        const ghRes = await fetch('https://api.github.com/repos/ssmirr/conduit/releases/latest');
         if (ghRes.ok) {
           const data = await ghRes.json();
           cachedLatestVersion = extractVersion(data.tag_name);
