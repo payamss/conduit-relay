@@ -160,13 +160,35 @@ cmd_status() {
     servers=$target
   fi
 
-  printf "%-12s  %-10s  %-8s  %-12s  %-12s\n" "NAME" "STATUS" "CLIENTS" "UPLOAD" "DOWNLOAD"
-  printf "%-12s  %-10s  %-8s  %-12s  %-12s\n" "----" "------" "-------" "------" "--------"
+  # Count servers
+  local total=0
+  for _ in $servers; do total=$((total + 1)); done
+
+  # Create temp directory for results
+  local tmpdir=$(mktemp -d)
+  trap "rm -rf '$tmpdir'" EXIT
+
+  # Launch parallel queries
+  printf "Checking %d server(s)..." "$total" >&2
+  for name in $servers; do
+    (
+      # Single SSH call for both status and logs
+      output=$(run_on "$name" 'echo "SVC_STATUS:$(systemctl is-active conduit 2>/dev/null || echo inactive)"; sudo -n journalctl -u conduit -n 50 --no-pager 2>/dev/null | grep -E "STATS|Connected" | tail -5' 2>/dev/null || echo "SVC_STATUS:inactive")
+      echo "$output" > "$tmpdir/$name"
+    ) &
+  done
+  wait
+  printf "\r%*s\r" 30 "" >&2
+
+  # Collect results from temp files
+  local names=() statuses=() clients_arr=() uploads=() downloads=()
+  local w_name=4 w_status=6 w_clients=7 w_upload=6 w_download=8  # header widths
 
   for name in $servers; do
-    local output=$(run_on "$name" 'journalctl -u conduit -n 50 --no-pager 2>/dev/null | grep -E "STATS" | tail -5' 2>/dev/null || echo "")
-    local svc_status=$(run_on "$name" 'systemctl is-active conduit 2>/dev/null' 2>/dev/null || echo "inactive")
+    local output=""
+    [ -f "$tmpdir/$name" ] && output=$(cat "$tmpdir/$name")
 
+    local svc_status=$(echo "$output" | grep -oP 'SVC_STATUS:\K.*' || echo "inactive")
     local status="offline"
     local clients="-"
     local upload="-"
@@ -183,10 +205,35 @@ cmd_status() {
       download=$(echo "$stats" | grep -oP 'Down:\s*\K[^\|]+' | tr -d ' ' || echo "-")
     fi
 
-    local color=$RED
-    [ "$status" = "connected" ] && color=$GREEN
+    names+=("$name")
+    statuses+=("$status")
+    clients_arr+=("$clients")
+    uploads+=("$upload")
+    downloads+=("$download")
 
-    printf "%-12s  ${color}%-10s${NC}  %-8s  %-12s  %-12s\n" "$name" "$status" "$clients" "$upload" "$download"
+    # Update max widths
+    [ ${#name} -gt $w_name ] && w_name=${#name}
+    [ ${#status} -gt $w_status ] && w_status=${#status}
+    [ ${#clients} -gt $w_clients ] && w_clients=${#clients}
+    [ ${#upload} -gt $w_upload ] && w_upload=${#upload}
+    [ ${#download} -gt $w_download ] && w_download=${#download}
+  done
+
+  # Print header
+  printf "%-${w_name}s  %-${w_status}s  %${w_clients}s  %${w_upload}s  %${w_download}s\n" "NAME" "STATUS" "CLIENTS" "UPLOAD" "DOWNLOAD"
+  printf "%-${w_name}s  %-${w_status}s  %${w_clients}s  %${w_upload}s  %${w_download}s\n" \
+    "$(printf '%*s' $w_name '' | tr ' ' '-')" \
+    "$(printf '%*s' $w_status '' | tr ' ' '-')" \
+    "$(printf '%*s' $w_clients '' | tr ' ' '-')" \
+    "$(printf '%*s' $w_upload '' | tr ' ' '-')" \
+    "$(printf '%*s' $w_download '' | tr ' ' '-')"
+
+  # Print rows
+  for i in "${!names[@]}"; do
+    local color=$RED
+    [ "${statuses[$i]}" = "connected" ] && color=$GREEN
+    printf "%-${w_name}s  ${color}%-${w_status}s${NC}  %${w_clients}s  %${w_upload}s  %${w_download}s\n" \
+      "${names[$i]}" "${statuses[$i]}" "${clients_arr[$i]}" "${uploads[$i]}" "${downloads[$i]}"
   done
 }
 
