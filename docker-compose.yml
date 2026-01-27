@@ -34,9 +34,10 @@ services:
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
       - SESSION_SECRET=${SESSION_SECRET}
       - JOIN_TOKEN=${JOIN_TOKEN}
-      - SSH_KEY_PATH=/ssh/id_ed25519
+      # SSH_KEY_PATH is set by entrypoint after copying keys
     volumes:
       - dashboard-data:/opt/conduit-dashboard/data
+      # SSH keys mounted as root-readable, entrypoint copies to node user
       - ${SSH_KEY_PATH:-~/.ssh/id_ed25519}:/ssh/id_ed25519:ro
       - ${SSH_KEY_PATH:-~/.ssh/id_ed25519}.pub:/ssh/id_ed25519.pub:ro
     # Expose port 3000 for HTTP-only mode (when not using Caddy)

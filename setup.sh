@@ -163,7 +163,10 @@ echo -e "${YELLOW}[4/6] Setting up SSH...${NC}"
 # Ensure SSH server is installed and running (needed for localhost monitoring)
 if ! command -v sshd &>/dev/null; then
   echo "  Installing OpenSSH server..."
-  apt-get install -y -qq openssh-server >/dev/null 2>&1
+  apt-get update -qq >/dev/null 2>&1
+  apt-get install -y -qq openssh-server >/dev/null 2>&1 || {
+    echo -e "  ${YELLOW}Warning: Failed to install openssh-server. SSH monitoring may not work.${NC}"
+  }
 fi
 if ! systemctl is-active --quiet ssh 2>/dev/null && ! systemctl is-active --quiet sshd 2>/dev/null; then
   echo "  Starting SSH server..."
