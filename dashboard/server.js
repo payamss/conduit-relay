@@ -299,16 +299,35 @@ function normalizeCountryName(name) {
 async function fetchGeoStats(server) {
   try {
     // Capture packets with sizes, aggregate bytes per IP, then geo lookup
+    // Increased sample size significantly (2000 -> 20000) and timeout (30s -> 60s) for better accuracy
     // tcpdump -q output includes "length X" for packet sizes
-    const cmd = `sudo -n /usr/bin/timeout 30 /usr/bin/tcpdump -n -q -i any 'inbound and (tcp or udp)' -c 2000 2>/dev/null | \\
+    const cmd = `sudo -n /usr/bin/timeout 60 /usr/bin/tcpdump -n -q -i any 'inbound and (tcp or udp)' -c 20000 2>/dev/null | \\
       awk '{
-        for(i=1;i<=NF;i++) if($i=="IP"){src=$(i+1);gsub(/\\.[0-9]+$/,"",src);break}
+        for(i=1;i<=NF;i++) {
+          if($i=="IP" || $i=="IP6") {
+            src=$(i+1);
+            # Remove port numbers and clean IP
+            gsub(/:[0-9]+$/,"",src);
+            gsub(/\\.$/,"",src);
+            break
+          }
+        }
         if(match($0,/length ([0-9]+)/,a))len=a[1];else len=0
-        if(src~/^[0-9]+\\./ && len>0)b[src]+=len
-      } END{for(ip in b)print b[ip],ip}' | sort -rn | head -200 | \\
+        # Only process valid IPv4 addresses
+        if(src~/^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && len>0)b[src]+=len
+      } END{
+        for(ip in b) {
+          if(ip~/^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/) {
+            print b[ip],ip
+          }
+        }
+      }' | sort -rn | head -500 | \\
       while read bytes ip; do
-        geo=$(geoiplookup "$ip" 2>/dev/null | grep -v "not found" | head -1)
-        [ -n "$geo" ] && echo "$bytes|$(echo "$geo" | awk -F": " "{print \\$2}")"
+        # Validate IP before geoiplookup
+        if [[ "$ip" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+          geo=$(geoiplookup "$ip" 2>/dev/null | grep -v "not found" | grep -v "can.t resolve" | head -1)
+          [ -n "$geo" ] && echo "$bytes|$(echo "$geo" | awk -F": " "{print \\$2}")"
+        fi
       done`;
     const output = await sshExec(server, cmd);
     const results = [];
@@ -339,6 +358,10 @@ async function fetchGeoStats(server) {
       count: data.count,
       bytes: data.bytes,
     }));
+    if (finalResults.length > 0) {
+      const totalBytes = finalResults.reduce((sum, r) => sum + r.bytes, 0);
+      console.log(`[GEO] ${server.name}: ${finalResults.length} countries, ${formatBytes(totalBytes)} total`);
+    }
     return { server: server.name, results: finalResults };
   } catch (err) {
     console.error(`[GEO] Failed to fetch from ${server.name}:`, err.message);
@@ -386,30 +409,50 @@ async function fetchClientStats(server) {
     // Capture inbound and outbound traffic per IP
     // Inbound = bytes coming TO the server (client upload)
     // Outbound = bytes going FROM the server (client download)
-    const cmd = `sudo -n /usr/bin/timeout 20 /usr/bin/tcpdump -n -q -i any '(tcp or udp)' -c 3000 2>/dev/null | \\
+    // Increased sample size significantly (3000 -> 30000) and timeout (20s -> 60s) for better accuracy
+    const cmd = `sudo -n /usr/bin/timeout 60 /usr/bin/tcpdump -n -q -i any '(tcp or udp)' -c 30000 2>/dev/null | \\
       awk '{
         dir=""; src=""; dst=""; len=0
         for(i=1;i<=NF;i++) {
           if($i=="In") dir="in"
           if($i=="Out") dir="out"
-          if($i=="IP" || $i=="IP6") { src=$(i+1); dst=$(i+3) }
+          if($i=="IP" || $i=="IP6") { 
+            src=$(i+1); 
+            dst=$(i+3);
+            # Remove port numbers from IP addresses (handle both IPv4 and IPv6)
+            gsub(/:[0-9]+$/,"",src); 
+            gsub(/:[0-9]+$/,"",dst);
+            # Remove any trailing dots or invalid characters
+            gsub(/\\.$/,"",src);
+            gsub(/\\.$/,"",dst);
+          }
         }
-        gsub(/\\.[0-9]+:$/,"",src); gsub(/\\.[0-9]+:$/,"",dst)
-        gsub(/:$/,"",src); gsub(/:$/,"",dst)
         if(match($0,/length ([0-9]+)/,a)) len=a[1]
-        if(dir=="in" && src~/^[0-9]+\\./ && len>0) { in_bytes[src]+=len; seen[src]=1 }
-        if(dir=="out" && dst~/^[0-9]+\\./ && len>0) { out_bytes[dst]+=len; seen[dst]=1 }
+        # Only process valid IPv4 addresses (4 octets)
+        if(dir=="in" && src~/^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && len>0) { 
+          in_bytes[src]+=len; seen[src]=1 
+        }
+        if(dir=="out" && dst~/^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && len>0) { 
+          out_bytes[dst]+=len; seen[dst]=1 
+        }
       } END {
-        for(ip in seen) print in_bytes[ip]+0, out_bytes[ip]+0, ip
-      }' | sort -t' ' -k1,1rn -k2,2rn | head -50 | \\
+        for(ip in seen) {
+          if(ip~/^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/) {
+            print in_bytes[ip]+0, out_bytes[ip]+0, ip
+          }
+        }
+      }' | sort -t' ' -k1,1rn -k2,2rn | head -500 | \\
       while read bytes_in bytes_out ip; do
-        geo=$(geoiplookup "$ip" 2>/dev/null | grep -v "not found" | head -1)
-        if [ -n "$geo" ]; then
-          cc=$(echo "$geo" | awk -F": " "{print \\$2}" | cut -d',' -f1)
-          cn=$(echo "$geo" | awk -F": " "{print \\$2}" | cut -d',' -f2-)
-          echo "$bytes_in|$bytes_out|$ip|$cc|$cn"
-        else
-          echo "$bytes_in|$bytes_out|$ip||Unknown"
+        # Validate IP before geoiplookup
+        if [[ "$ip" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+          geo=$(geoiplookup "$ip" 2>/dev/null | grep -v "not found" | grep -v "can.t resolve" | head -1)
+          if [ -n "$geo" ]; then
+            cc=$(echo "$geo" | awk -F": " "{print \\$2}" | cut -d',' -f1)
+            cn=$(echo "$geo" | awk -F": " "{print \\$2}" | cut -d',' -f2-)
+            echo "$bytes_in|$bytes_out|$ip|$cc|$cn"
+          else
+            echo "$bytes_in|$bytes_out|$ip||Unknown"
+          fi
         fi
       done`;
     const output = await sshExec(server, cmd);
@@ -417,12 +460,15 @@ async function fetchClientStats(server) {
     // Parse output: "12345|67890|1.2.3.4|IR|Iran, Islamic Republic of"
     for (const line of output.split('\n')) {
       const parts = line.trim().split('|');
-      if (parts.length >= 5) {
+      if (parts.length >= 3) {
         const bytes_in = parseInt(parts[0], 10) || 0;
         const bytes_out = parseInt(parts[1], 10) || 0;
-        if (bytes_in > 0 || bytes_out > 0) {
+        const ip = parts[2]?.trim();
+        
+        // Validate IP address format
+        if (ip && /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(ip) && (bytes_in > 0 || bytes_out > 0)) {
           results.push({
-            ip_address: parts[2],
+            ip_address: ip,
             country_code: parts[3] || '',
             country_name: normalizeCountryName(parts[4]?.trim() || 'Unknown'),
             bytes_in,
@@ -430,6 +476,9 @@ async function fetchClientStats(server) {
           });
         }
       }
+    }
+    if (results.length > 0) {
+      console.log(`[CLIENTS] ${server.name}: Captured ${results.length} unique IPs`);
     }
     return { server: server.name, results };
   } catch (err) {
@@ -458,8 +507,8 @@ async function fetchAllClientStats() {
     }
   }
 
-  // Clean up old data (keep last 2 hours for per-IP tracking)
-  const cutoff = timestamp - (2 * 3600000);
+  // Clean up old data (keep last 4 hours for per-IP tracking - longer retention for better aggregation)
+  const cutoff = timestamp - (4 * 3600000);
   db.run(`DELETE FROM client_stats WHERE timestamp < ?`, [cutoff]);
   
   saveDb();
@@ -735,6 +784,8 @@ app.get('/api/geo', requireAuth, (req, res) => {
     const hours = parseInt(req.query.hours) || 24;
     const since = Date.now() - (hours * 3600000);
     // Aggregate counts and bytes by country across time range
+    // Note: These are estimates from tcpdump samples, not exact totals from conduit service
+    // For exact totals, see /api/stats endpoint which uses conduit's reported values
     const stmt = db.prepare(`SELECT country_code, country_name, SUM(count) as total_count, SUM(bytes) as total_bytes FROM geo_stats WHERE timestamp > ? GROUP BY country_code ORDER BY total_bytes DESC`);
     stmt.bind([since]);
     const rows = [];
@@ -756,6 +807,7 @@ app.get('/api/geo', requireAuth, (req, res) => {
 app.get('/api/clients', requireAuth, (req, res) => {
   try {
     const minutes = parseInt(req.query.minutes) || 30;
+    const limit = parseInt(req.query.limit) || 1000; // Default to 1000, allow override
     const since = Date.now() - (minutes * 60000);
     
     // Get recent client data with aggregation and speed calculation
@@ -775,29 +827,38 @@ app.get('/api/clients', requireAuth, (req, res) => {
       WHERE timestamp > ? 
       GROUP BY ip_address, server
       ORDER BY (total_in + total_out) DESC
-      LIMIT 100
+      LIMIT ?
     `);
-    stmt.bind([since]);
+    stmt.bind([since, limit]);
     const rows = [];
     while (stmt.step()) {
       const row = stmt.getAsObject();
-      const duration = Math.max(1, (row.last_seen - row.first_seen) / 1000); // seconds
+      // Calculate duration in seconds
+      const duration = Math.max(1, (row.last_seen - row.first_seen) / 1000);
       const totalBytes = row.total_in + row.total_out;
-      // Speed in bytes/sec (only if we have multiple samples over time)
-      const speed = row.samples > 1 ? Math.round(totalBytes / duration) : 0;
-      rows.push({
-        ip: maskIP(row.ip_address),
-        ip_full: row.ip_address, // For debugging, can be removed in production
-        country_code: row.country_code || '',
-        country_name: row.country_name || 'Unknown',
-        server: row.server,
-        bytes_in: row.total_in,
-        bytes_out: row.total_out,
-        total: totalBytes,
-        speed: speed, // bytes per second
-        samples: row.samples,
-        last_seen: row.last_seen,
-      });
+      
+      // Speed calculation: bytes per second
+      // Use the time window for speed, but only if we have meaningful data
+      // If duration is very short (< 10 seconds), use a minimum window for speed calc
+      const effectiveDuration = Math.max(duration, 10); // Minimum 10 seconds for speed calc
+      const speed = row.samples > 1 && totalBytes > 0 ? Math.round(totalBytes / effectiveDuration) : 0;
+      
+      // Validate IP address format before including
+      if (row.ip_address && /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(row.ip_address)) {
+        rows.push({
+          ip: maskIP(row.ip_address),
+          ip_full: row.ip_address,
+          country_code: row.country_code || '',
+          country_name: row.country_name || 'Unknown',
+          server: row.server,
+          bytes_in: row.total_in,      // Client upload (bytes TO server)
+          bytes_out: row.total_out,     // Client download (bytes FROM server)
+          total: totalBytes,
+          speed: speed,                 // bytes per second
+          samples: row.samples,
+          last_seen: row.last_seen,
+        });
+      }
     }
     stmt.free();
     res.json(rows);
@@ -1434,15 +1495,15 @@ setInterval(async () => {
   try { await fetchAllStats(); await checkBandwidthLimits(); } catch (e) { console.error('Background poll failed:', e); }
 }, 30000);
 
-// Background polling for geo stats (every 5 minutes)
+// Background polling for geo stats (every 3 minutes - more frequent for better aggregation)
 setInterval(async () => {
   try { await fetchAllGeoStats(); } catch (e) { console.error('Geo poll failed:', e); }
-}, 300000);
+}, 180000);
 
-// Background polling for client stats (every 2 minutes)
+// Background polling for client stats (every 1.5 minutes - more frequent for better aggregation)
 setInterval(async () => {
   try { await fetchAllClientStats(); } catch (e) { console.error('Client poll failed:', e); }
-}, 120000);
+}, 90000);
 
 // Start
 initDb().then(() => {

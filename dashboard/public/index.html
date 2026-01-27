@@ -1001,7 +1001,7 @@
     // Fetch and display active clients
     async function fetchClients() {
       try {
-        const res = await fetch('/api/clients?minutes=30');
+        const res = await fetch('/api/clients?minutes=30&limit=1000');
         if (res.status === 401) return;
         clientsData = await res.json();
         renderClients();
