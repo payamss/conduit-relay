@@ -406,7 +406,38 @@ async function fetchAllGeoStats() {
 // Fetch per-IP traffic stats from a single server
 async function fetchClientStats(server) {
   try {
-    // Capture inbound and outbound traffic per IP
+    // First, get all active TCP connections using ss (more reliable than tcpdump sampling)
+    // This captures ALL connected clients, not just those with active traffic
+    // ss format: ESTAB 0 0 server_ip:port client_ip:port
+    // We want client IPs (the remote/peer IPs connecting to our server)
+    // For conduit relay, clients connect to various ports, so we get all established connections
+    const connCmd = `ss -tn state established 2>/dev/null | awk '/ESTAB/ {
+      # ss output format: ESTAB 0 0 server:port client:port
+      # The last field is typically the peer (client) address
+      # Extract all IP:port pairs and take the one that's not localhost/private
+      for(i=1;i<=NF;i++) {
+        if($i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+$/) {
+          split($i, parts, ":");
+          ip = parts[1];
+          # Filter out localhost and private IPs (these are likely server-side)
+          if(ip ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && ip !~ /^(127\\.|0\\.|10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|169\\.254\\.)/) {
+            print ip
+          }
+        }
+      }
+    }' | sort -u`;
+    
+    // Get active connections first
+    const connOutput = await sshExec(server, connCmd);
+    const activeIPs = new Set();
+    for (const line of connOutput.split('\n')) {
+      const ip = line.trim();
+      if (ip && /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(ip)) {
+        activeIPs.add(ip);
+      }
+    }
+    
+    // Now capture traffic per IP using tcpdump for traffic stats
     // Inbound = bytes coming TO the server (client upload)
     // Outbound = bytes going FROM the server (client download)
     // Increased sample size significantly (3000 -> 30000) and timeout (20s -> 60s) for better accuracy
@@ -456,8 +487,9 @@ async function fetchClientStats(server) {
         fi
       done`;
     const output = await sshExec(server, cmd);
-    const results = [];
-    // Parse output: "12345|67890|1.2.3.4|IR|Iran, Islamic Republic of"
+    
+    // Parse tcpdump output for traffic stats
+    const trafficMap = new Map(); // ip -> {bytes_in, bytes_out, country_code, country_name}
     for (const line of output.split('\n')) {
       const parts = line.trim().split('|');
       if (parts.length >= 3) {
@@ -465,20 +497,67 @@ async function fetchClientStats(server) {
         const bytes_out = parseInt(parts[1], 10) || 0;
         const ip = parts[2]?.trim();
         
-        // Validate IP address format
-        if (ip && /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(ip) && (bytes_in > 0 || bytes_out > 0)) {
-          results.push({
-            ip_address: ip,
-            country_code: parts[3] || '',
-            country_name: normalizeCountryName(parts[4]?.trim() || 'Unknown'),
+        if (ip && /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(ip)) {
+          trafficMap.set(ip, {
             bytes_in,
             bytes_out,
+            country_code: parts[3] || '',
+            country_name: normalizeCountryName(parts[4]?.trim() || 'Unknown'),
           });
         }
       }
     }
+    
+    // Combine: include ALL active connections, even if no traffic in sample window
+    const results = [];
+    
+    // First, add all active connections (even with 0 traffic)
+    for (const ip of activeIPs) {
+      const traffic = trafficMap.get(ip) || { bytes_in: 0, bytes_out: 0, country_code: '', country_name: 'Unknown' };
+      
+      // If we don't have country info from traffic, try to get it
+      if (!traffic.country_code && ip) {
+        try {
+          const geoCmd = `geoiplookup "${ip}" 2>/dev/null | grep -v "not found" | grep -v "can.t resolve" | head -1`;
+          const geoOutput = await sshExec(server, geoCmd);
+          if (geoOutput && geoOutput.trim()) {
+            const geoMatch = geoOutput.match(/: (.+)/);
+            if (geoMatch) {
+              const geoParts = geoMatch[1].split(',');
+              traffic.country_code = geoParts[0]?.trim() || '';
+              traffic.country_name = normalizeCountryName(geoParts.slice(1).join(',').trim() || 'Unknown');
+            }
+          }
+        } catch (e) {
+          // Ignore geo lookup errors
+        }
+      }
+      
+      results.push({
+        ip_address: ip,
+        country_code: traffic.country_code,
+        country_name: traffic.country_name,
+        bytes_in: traffic.bytes_in,
+        bytes_out: traffic.bytes_out,
+      });
+    }
+    
+    // Also include IPs from traffic that might not be in active connections (recently disconnected)
+    for (const [ip, traffic] of trafficMap.entries()) {
+      if (!activeIPs.has(ip) && (traffic.bytes_in > 0 || traffic.bytes_out > 0)) {
+        results.push({
+          ip_address: ip,
+          country_code: traffic.country_code,
+          country_name: traffic.country_name,
+          bytes_in: traffic.bytes_in,
+          bytes_out: traffic.bytes_out,
+        });
+      }
+    }
     if (results.length > 0) {
-      console.log(`[CLIENTS] ${server.name}: Captured ${results.length} unique IPs`);
+      console.log(`[CLIENTS] ${server.name}: ${activeIPs.size} active connections, ${results.length} total clients (including recent traffic)`);
+    } else if (activeIPs.size > 0) {
+      console.log(`[CLIENTS] ${server.name}: ${activeIPs.size} active connections found, but no traffic data captured`);
     }
     return { server: server.name, results };
   } catch (err) {
