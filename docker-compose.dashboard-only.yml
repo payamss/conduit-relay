@@ -1,0 +1,30 @@
+# Conduit Dashboard Only (for conduit-manager users)
+# Usage: docker compose -f docker-compose.dashboard-only.yml up -d
+#
+# This adds the Paradixe dashboard to existing conduit-manager installations
+# without touching your running 'conduit' container.
+
+services:
+  dashboard:
+    image: ghcr.io/paradixe/conduit-dashboard:latest
+    container_name: conduit-dashboard
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - JOIN_TOKEN=${JOIN_TOKEN}
+    volumes:
+      - dashboard-data:/opt/conduit-dashboard/data
+      # SSH keys for monitoring (mounted read-only)
+      - ${SSH_KEY_PATH}:/ssh/id_ed25519:ro
+      - ${SSH_KEY_PATH}.pub:/ssh/id_ed25519.pub:ro
+    ports:
+      - "3000:3000"
+    extra_hosts:
+      # Allow dashboard to reach host's SSH server
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  dashboard-data:
+    name: conduit-dashboard-data
