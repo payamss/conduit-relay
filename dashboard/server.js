@@ -1067,9 +1067,10 @@ if [ "$DEPLOY_MODE" = "docker" ]; then
   mkdir -p "$CONDUIT_DIR"
   cd "$CONDUIT_DIR"
 
-  # Check if already running
-  if docker ps --filter name=conduit-relay --format "{{.Names}}" 2>/dev/null | grep -q conduit-relay; then
-    echo "  Conduit relay container already running"
+  # Check if already running (our conduit-relay OR conduit-manager's conduit)
+  EXISTING_CONTAINER=\$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "^conduit(-relay)?\$" | head -1)
+  if [ -n "\$EXISTING_CONTAINER" ]; then
+    echo "  Conduit container already running: \$EXISTING_CONTAINER"
   else
     # Download relay-only compose file
     curl -sLo docker-compose.yml "https://raw.githubusercontent.com/paradixe/conduit-relay/main/docker-compose.relay-only.yml"
@@ -1437,12 +1438,13 @@ app.post('/api/update', requireAuth, async (req, res) => {
         let output;
         if (mode === 'docker') {
           // Docker update: pull new image and recreate container
+          const container = getContainerName(server.name);
           output = await sshExec(server, `
             set -e
             cd ~/conduit 2>/dev/null || cd /opt/conduit 2>/dev/null || true
             docker compose pull 2>/dev/null || docker pull ghcr.io/ssmirr/conduit/conduit:latest
-            docker compose up -d 2>/dev/null || docker restart conduit-relay
-            docker logs conduit-relay --tail 5 2>&1 | grep -i version || echo "updated"
+            docker compose up -d 2>/dev/null || docker restart ${container}
+            docker logs ${container} --tail 5 2>&1 | grep -i version || echo "updated"
           `);
         } else {
           // Native update: download binary and restart service

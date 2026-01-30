@@ -1,116 +1,72 @@
 # Conduit Relay
 
-Volunteer relay for [Psiphon](https://psiphon.ca). Routes traffic for users in censored regions via WebRTC. Your VPS becomes an exit node.
+**Volunteer relay for [Psiphon](https://psiphon.ca)**
+Routes traffic for users in censored regions via WebRTC. Your VPS becomes an exit node.
 
-**Requirements:** Linux VPS, root access
-**Bandwidth:** 50-200 GB/day depending on demand
-
-**New?** Check the [step-by-step setup guide](SETUP.md) (English + فارسی)
-
-**OrangePi/Raspberry Pi?** See the [Portainer setup guide](docs/portainer-setup.md)
-
----
-
-## Quick Start (Relay + Dashboard)
-
-One command installs everything:
+**Requirements:** Linux VPS, root access, 50-200 GB/day bandwidth
 
 ```bash
 curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/setup.sh | sudo bash
 ```
 
-**Already have Docker/ssmirr's setup?** Use `docker-setup.sh` instead - it detects existing containers and offers migration:
+> **Already using [conduit-manager](https://github.com/SamNet-dev/conduit-manager)?** Add the dashboard without touching your relay:
+> ```bash
+> curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/migrate-dashboard.sh | sudo bash
+> ```
+> Keeps your container, CLI commands still work, gives you fleet management.
+
+---
+
+## Installation
+
+### Native
+
+```bash
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/setup.sh | sudo bash
+```
+
+After install you'll get:
+- Dashboard URL at `http://your-ip:3000`
+- Admin password — **save it, shown once**
+- Join command for adding more servers
+
+> **Optional:** Enter a domain during setup for HTTPS via Let's Encrypt
+
+### Docker
+
 ```bash
 curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/docker-setup.sh | sudo bash
 ```
 
-You'll get:
-- **Dashboard URL** - Web interface to monitor your servers
-- **Password** - Save it! Won't be shown again
-- **Join command** - Run this on other servers to auto-connect them
+Detects existing Docker/ssmirr setups and offers migration.
 
-Optionally enter a domain during setup to get HTTPS via Let's Encrypt.
+### Relay Only
 
-**Adding more servers:**
-```bash
-# On each additional server, run the join command shown after setup:
-curl -sL "http://YOUR_DASHBOARD_IP:3000/join/TOKEN" | sudo bash
-```
-
-Servers auto-register and appear on your dashboard. The join script auto-detects Docker - if available, it uses containers; otherwise native install.
-
-**Mixed fleets supported:** Dashboard monitors both Docker and native servers.
-
----
-
-## Updating
-
-Already installed? Update everything with one command:
+No dashboard, just the relay:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/update.sh | sudo bash
-```
-
-Or from the dashboard: **Settings → Update Dashboard**
-
-This updates both the relay binary and dashboard code while preserving your config.
-
-**Uninstall:**
-```bash
-curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/uninstall.sh | sudo bash
-```
-
-Removes both native and Docker installations.
-
----
-
-## Dashboard Features
-
-- **Live stats** - Clients, bandwidth, geo distribution per server
-- **Per-node controls** - Stop/Start/Restart individual relays
-- **Edit servers** - Set bandwidth limits, rename, delete
-- **Auto-updates** - Update all relays and dashboard from the web UI
-- **Join command** - Easy onboarding for new servers
-
----
-
-## Relay Only (No Dashboard)
-
-If you just want the relay without the web dashboard:
-
-**Native:**
-```bash
+# Native
 curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/install.sh | sudo bash
-```
 
-**Docker:**
-```bash
+# Docker
 curl -sLO https://raw.githubusercontent.com/paradixe/conduit-relay/main/docker-compose.relay-only.yml
 docker compose -f docker-compose.relay-only.yml up -d
 ```
 
-**Configuration:**
-- `MAX_CLIENTS=200` max concurrent clients (default)
-- `BANDWIDTH=-1` unlimited bandwidth (default)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_CLIENTS` | 200 | Max concurrent connections |
+| `BANDWIDTH` | -1 | Bandwidth limit in Mbps (-1 = unlimited) |
 
-Custom: `curl ... | MAX_CLIENTS=500 BANDWIDTH=100 bash`
+Custom config: `curl -sL ... | MAX_CLIENTS=500 BANDWIDTH=100 sudo bash`
 
-**Commands:**
-```bash
-# Native
-systemctl status conduit      # status
-journalctl -u conduit -f      # logs
+### Raspberry Pi / OrangePi
 
-# Docker
-docker logs conduit-relay -f  # logs
-docker ps                     # status
-```
+See [Portainer setup guide](docs/portainer-setup.md) for ARM devices with a web UI.
 
----
+### Dashboard Only
 
-## Dashboard Only (No Relay)
-
-Run dashboard on your laptop to manage remote servers:
+Manage remote servers from your laptop (no local relay):
 
 ```bash
 curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/setup.sh | DASHBOARD_ONLY=1 sudo bash
@@ -118,17 +74,183 @@ curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/setup.sh 
 
 ---
 
+## Multi-Server Fleet
+
+### Via Dashboard (Recommended)
+
+After initial setup, use the join command on additional servers:
+
+```bash
+curl -sL "http://YOUR_DASHBOARD_IP:3000/join/TOKEN" | sudo bash
+```
+
+> Auto-detects Docker availability. Mixed fleets (Docker + native) supported.
+
+<details>
+<summary><strong>Via CLI (fleet.sh)</strong></summary>
+
+For operators who prefer command-line fleet management:
+
+```bash
+curl -sLO https://raw.githubusercontent.com/paradixe/conduit-relay/main/fleet.sh
+chmod +x fleet.sh
+```
+
+| Command | Description |
+|---------|-------------|
+| `./fleet.sh add <name> <ip> [user]` | Register a server |
+| `./fleet.sh list` | List all servers |
+| `./fleet.sh status [name\|all]` | Check status with live stats |
+| `./fleet.sh install [name\|all]` | Install conduit remotely |
+| `./fleet.sh update [name\|all]` | Update to latest release |
+| `./fleet.sh start/stop [name\|all]` | Control relay service |
+| `./fleet.sh logs <name>` | Tail logs from server |
+| `./fleet.sh dashboard <name> <pass>` | Deploy dashboard to server |
+
+Servers stored in `~/.conduit-servers`.
+
+</details>
+
+---
+
+## Operations
+
+### Update
+
+```bash
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/update.sh | sudo bash
+```
+
+Or from dashboard: Settings → Update Dashboard
+
+### Uninstall
+
+```bash
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/uninstall.sh | sudo bash
+```
+
+Removes both native and Docker installations.
+
+### Service Commands
+
+**Native:**
+```bash
+systemctl status conduit        # Status
+systemctl restart conduit       # Restart
+journalctl -u conduit -f        # Logs
+```
+
+**Docker:**
+```bash
+docker ps                       # Status
+docker restart conduit-relay    # Restart
+docker logs conduit-relay -f    # Logs
+```
+
+---
+
+## Monitoring Tools
+
+<details>
+<summary><strong>Live Stats (conduit-stats.sh)</strong></summary>
+
+```bash
+curl -sLO https://raw.githubusercontent.com/paradixe/conduit-relay/main/conduit-stats.sh
+chmod +x conduit-stats.sh
+./conduit-stats.sh              # Current stats
+./conduit-stats.sh --live       # Auto-refresh every 5s
+./conduit-stats.sh --geo        # Include geographic breakdown
+./conduit-stats.sh --live --geo # Both
+```
+
+</details>
+
+<details>
+<summary><strong>Geographic Distribution (geo-stats.sh)</strong></summary>
+
+See where your clients connect from:
+
+```bash
+curl -sLO https://raw.githubusercontent.com/paradixe/conduit-relay/main/geo-stats.sh
+chmod +x geo-stats.sh
+./geo-stats.sh [seconds] [max-packets]
+```
+
+Requires: `tcpdump`, `geoip-bin` (auto-installed)
+
+</details>
+
+---
+
+## Dashboard Features
+
+- Live stats per server (clients, bandwidth, geo)
+- Start/Stop/Restart individual relays
+- Edit server config (bandwidth limits, names)
+- Update all relays from web UI
+- Join tokens for easy onboarding
+- Monthly bandwidth tracking with auto-stop
+
+---
+
+## Guides
+
+- [Step-by-step setup](SETUP.md) — Detailed walkthrough (English + فارسی)
+- [Portainer setup](docs/portainer-setup.md) — For OrangePi/Raspberry Pi
+
+---
+
+<div dir="rtl">
+
 ## فارسی
 
-یه VPS بگیر، این رو بزن:
+### نصب
 
+**روش عادی (Native):**
 ```bash
 curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/setup.sh | sudo bash
 ```
 
-بعدش یه URL و پسورد میده. با اون میتونی وضعیت سرورت رو ببینی.
+**داکر:**
+```bash
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/docker-setup.sh | sudo bash
+```
 
-**اضافه کردن سرور دیگه:**
-دستوری که بعد نصب نشون میده رو روی سرورای دیگت بزن، خودکار وصل میشن.
+**فقط ریلی (بدون داشبورد):**
+```bash
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/install.sh | sudo bash
+```
 
-تمام. سرورت الان داره به مردم کمک میکنه فیلترشکن داشته باشن.
+> بعد از نصب یه URL و پسورد میده. **پسورد رو ذخیره کن** — فقط یه بار نشون میده.
+
+### مدیریت چند سرور
+
+دستور join که بعد نصب نشون میده رو روی سرورای دیگت بزن:
+```bash
+curl -sL "http://IP_DASHBOARD:3000/join/TOKEN" | sudo bash
+```
+
+### آپدیت و حذف
+
+```bash
+# آپدیت
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/update.sh | sudo bash
+
+# حذف کامل
+curl -sL https://raw.githubusercontent.com/paradixe/conduit-relay/main/uninstall.sh | sudo bash
+```
+
+### دستورات سرویس
+
+| دستور | کاربرد |
+|-------|--------|
+| `systemctl status conduit` | وضعیت |
+| `systemctl restart conduit` | ریستارت |
+| `journalctl -u conduit -f` | لاگ‌ها |
+
+### راهنمای کامل
+
+- [SETUP.md](SETUP.md) — آموزش قدم به قدم
+- [Portainer](docs/portainer-setup.md) — برای رزبری پای و اورنج پای
+
+</div>
